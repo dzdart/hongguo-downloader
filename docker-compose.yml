@@ -1,0 +1,15 @@
+services:
+  hongguo-downloader:
+    build: .
+    container_name: hongguo-downloader
+    ports:
+      - "8080:8080"
+    environment:
+      - DOWNLOAD_DIR=/downloads
+      - DATA_FILE=/app/data/data.json
+    volumes:
+      # 下载的视频文件持久化到宿主机 ./downloads
+      - ./downloads:/downloads
+      # 应用数据（设置、任务历史）持久化到宿主机 ./data
+      - ./data:/app/data
+    restart: unless-stopped

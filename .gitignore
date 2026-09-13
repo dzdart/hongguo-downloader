@@ -13,6 +13,10 @@ out/
 *.app
 *.AppImage
 
+# 运行时数据与下载目录
+data/
+downloads/
+
 # 临时文件与缓存
 .zcode/
 .vscode/

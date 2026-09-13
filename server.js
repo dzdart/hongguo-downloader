@@ -1,26 +1,37 @@
 /**
- * main.js - 红果短剧下载器（独立版）主进程
+ * server.js - 红果短剧下载器 Web 服务端
  *
  * 功能：
- *   1. 红果短剧解析（分享链接 / series_id -> 全剧集列表）
- *   2. 批量提交下载任务到下载队列
- *   3. 并发下载：流式下载播放直链 -> spade_a 派生 AES Key -> CENC-AES-CTR 解密 -> 输出 mp4
- *   4. 下载管理：进度推送、暂停/取消、重试、删除、打开所在文件夹
- *   5. 设置：下载目录、命名规则、并发数（JSON 文件持久化）
+ *   1. 提供 Web 页面（dist-react 构建产物）
+ *   2. 红果短剧解析（分享链接 / series_id -> 全剧集列表）
+ *   3. 批量提交下载任务到下载队列
+ *   4. 并发下载：流式下载播放直链 -> spade_a 派生 AES Key -> CENC-AES-CTR 解密 -> 输出 mp4
+ *   5. 下载管理：进度推送（SSE）、暂停/取消、重试、删除
+ *   6. 设置：下载目录、命名规则、并发数（JSON 文件持久化）
+ *
+ * 环境变量：
+ *   PORT         服务监听端口（默认 8080）
+ *   DOWNLOAD_DIR 默认下载根目录（默认 ./downloads）
+ *   DATA_FILE    数据持久化文件路径（默认 ./data/data.json）
  */
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const express = require('express');
 const axios = require('axios');
 
 const hongguo = require('./src/native/hongguo');
 const store = require('./src/store');
-const APP_VERSION = app.getVersion() || '1.0.0';
 
-const APP_TITLE = '小菜鸟 软件';
-const OFFICIAL_WEBSITE = 'https://111330.com';
+const pkg = require('./package.json');
 
-let mainWindow = null;
+const APP_VERSION = (pkg && pkg.version) || '1.0.0';
+const APP_NAME = '红果短剧下载器';
+
+const PORT = parseInt(process.env.PORT, 10) || 8080;
+const DOWNLOAD_ROOT =
+  (process.env.DOWNLOAD_DIR && String(process.env.DOWNLOAD_DIR).trim()) ||
+  path.join(process.cwd(), 'downloads');
+const DATA_FILE = process.env.DATA_FILE || path.join(process.cwd(), 'data', 'data.json');
 
 
 // ===== 下载任务管理 =====
@@ -29,10 +40,24 @@ let downloadQueue = [];
 let activeDownloads = 0;
 let MAX_CONCURRENT_DOWNLOADS = 3;
 
+// ===== SSE 实时事件客户端 =====
+const sseClients = new Set();
+
+function broadcast(event, payload) {
+  const frame = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const res of sseClients) {
+    try {
+      res.write(frame);
+    } catch (_) {
+      /* 忽略已断开的连接 */
+    }
+  }
+}
+
 // ===== 设置 =====
 function getDefaultSettings() {
   return {
-    root: app.getPath('downloads'),
+    root: DOWNLOAD_ROOT,
     // 文件命名模板：可用变量 剧名(series_title) 集数(vid_index) 标题(ep_title)
     name_format: '剧名 集数',
     max_concurrent: 3,
@@ -88,7 +113,7 @@ function loadDownloadTasks() {
     return {
       ...task,
       status: inProgress ? 'failed' : task.status,
-      error: inProgress ? '应用关闭时任务中断' : task.error,
+      error: inProgress ? '服务重启时任务中断' : task.error,
     };
   });
 }
@@ -135,7 +160,7 @@ async function executeHongguoDownload(task) {
     console.log(`[Hongguo] 开始下载《${series_title}》第${vid_index}集:`, vid);
     task.status = 'downloading';
     task.progress = 0;
-    sendToRenderer('download-progress', { id, progress: 0, receivedBytes: 0, totalBytes: 0 });
+    broadcast('download-progress', { id, progress: 0, receivedBytes: 0, totalBytes: 0 });
 
     // 1. 获取播放直链与 spade_a 加密信息
     const playInfo = await hongguo.fetchPlayUrlSingle(vid);
@@ -145,7 +170,7 @@ async function executeHongguoDownload(task) {
 
     // 2. 下载目录
     const settings = getCurrentSettings();
-    const root = (settings.root && String(settings.root).trim()) ? String(settings.root).trim() : app.getPath('downloads');
+    const root = (settings.root && String(settings.root).trim()) ? String(settings.root).trim() : DOWNLOAD_ROOT;
     const seriesFolder = sanitizeFolderName(series_title) || '未命名短剧';
     const downloadDir = task.customDir || path.join(root, '红果短剧', seriesFolder);
     fs.mkdirSync(downloadDir, { recursive: true });
@@ -160,7 +185,7 @@ async function executeHongguoDownload(task) {
       task.progress = 100;
       task.endTime = Date.now();
       saveDownloadTasks();
-      sendToRenderer('download-completed', { id, path: finalPath });
+      broadcast('download-completed', { id, path: finalPath });
       return;
     }
 
@@ -202,7 +227,7 @@ async function executeHongguoDownload(task) {
       task.receivedBytes = received;
       const progress = totalLength ? Math.floor((received / totalLength) * 100) : 0;
       task.progress = progress;
-      sendToRenderer('download-progress', { id, progress, receivedBytes: received, totalBytes: totalLength });
+      broadcast('download-progress', { id, progress, receivedBytes: received, totalBytes: totalLength });
     });
 
     response.data.pipe(writer);
@@ -219,7 +244,7 @@ async function executeHongguoDownload(task) {
       task.status = 'stopped';
       task.endTime = Date.now();
       saveDownloadTasks();
-      sendToRenderer('download-stopped', { id });
+      broadcast('download-stopped', { id });
       return;
     }
 
@@ -242,7 +267,7 @@ async function executeHongguoDownload(task) {
     saveDownloadTasks();
 
     console.log('[Hongguo] 下载完成:', finalPath);
-    sendToRenderer('download-completed', { id, path: finalPath });
+    broadcast('download-completed', { id, path: finalPath });
   } catch (error) {
     console.error('[Hongguo] 下载失败:', error.message);
     delete task.cancelSource;
@@ -250,38 +275,81 @@ async function executeHongguoDownload(task) {
     task.status = 'failed';
     task.error = error.message;
     saveDownloadTasks();
-    sendToRenderer('download-failed', { id, error: error.message });
+    broadcast('download-failed', { id, error: error.message });
   }
 }
 
-// 向渲染进程发送事件
-function sendToRenderer(channel, payload) {
-  if (mainWindow && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
-    mainWindow.webContents.send(channel, payload);
+// 删除单个任务（内部方法）
+function deleteOneTask(taskId) {
+  const taskIndex = downloadTasks.findIndex((t) => t.id === taskId);
+  if (taskIndex === -1) return;
+  const task = downloadTasks[taskIndex];
+  if (task.status === 'downloading') {
+    task.cancelled = true;
+    if (task.cancelSource) { try { task.cancelSource.cancel('用户删除任务'); } catch (_) {} }
+    if (task.writer) { try { task.writer.end(); } catch (_) {} }
   }
+  downloadTasks.splice(taskIndex, 1);
+  const qIndex = downloadQueue.findIndex((t) => t.id === taskId);
+  if (qIndex !== -1) downloadQueue.splice(qIndex, 1);
 }
 
-// ===== IPC：红果解析与批量下载 =====
-ipcMain.handle('hongguo-resolve', async (event, input) => {
+// ===== 任务序列化（剔除不可持久化字段） =====
+const STATUS_ORDER = {
+  downloading: 0,
+  pending: 1,
+  failed: 2,
+  stopped: 3,
+  completed: 4,
+};
+
+function getSortedTasks() {
+  const sorted = downloadTasks.slice().sort((a, b) => {
+    const wa = STATUS_ORDER[a.status] ?? 99;
+    const wb = STATUS_ORDER[b.status] ?? 99;
+    if (wa !== wb) return wa - wb;
+    if (wa <= 1) {
+      return (a.hongguoInfo?.vid_index || 0) - (b.hongguoInfo?.vid_index || 0) || (a.startTime || 0) - (b.startTime || 0);
+    }
+    return (b.endTime || b.startTime || 0) - (a.endTime || a.startTime || 0);
+  });
+  return sorted.map((task) => {
+    const { cancelSource, writer, ...serializableTask } = task;
+    return serializableTask;
+  });
+}
+
+// ===== Express 应用 =====
+const app = express();
+app.use(express.json({ limit: '2mb' }));
+
+// ---- API：应用信息 ----
+app.get('/api/app-info', (req, res) => {
+  res.json({ version: APP_VERSION, appName: APP_NAME, brand: APP_NAME });
+});
+
+// ---- API：红果解析与批量下载 ----
+app.post('/api/resolve', async (req, res) => {
   try {
+    const input = req.body && req.body.input;
     const seriesId = await hongguo.resolveSeriesId(input);
     const data = await hongguo.fetchEpisodeList(seriesId);
-    return { success: true, data };
+    res.json({ success: true, data });
   } catch (error) {
     console.error('[Hongguo] 解析失败:', error.message);
-    return { success: false, error: error.message };
+    res.json({ success: false, error: error.message });
   }
 });
 
-ipcMain.handle('hongguo-download-batch', async (event, payload) => {
+app.post('/api/download', async (req, res) => {
   try {
-    const { seriesId, seriesTitle, episodes } = payload || {};
+    const { seriesId, seriesTitle, episodes } = req.body || {};
     if (!Array.isArray(episodes) || episodes.length === 0) {
-      return { success: false, error: '未选择集数' };
+      return res.json({ success: false, error: '未选择集数' });
     }
 
     const settings = getCurrentSettings();
-    const root = (settings.root && String(settings.root).trim()) ? String(settings.root).trim() : app.getPath('downloads');
+    const root = (settings.root && String(settings.root).trim()) ? String(settings.root).trim() : DOWNLOAD_ROOT;
     const cleanSeriesTitle = sanitizeFolderName(seriesTitle) || '红果短剧';
     const downloadDir = path.join(root, '红果短剧', cleanSeriesTitle);
     try { fs.mkdirSync(downloadDir, { recursive: true }); } catch (_) {}
@@ -338,114 +406,105 @@ ipcMain.handle('hongguo-download-batch', async (event, payload) => {
 
       downloadTasks.unshift(task);
       downloadQueue.push(task);
-      sendToRenderer('download-task-added', task);
+      broadcast('download-task-added', task);
     }
 
     saveDownloadTasks();
     processDownloadQueue();
 
-    return { success: true, count: episodes.length };
+    return res.json({ success: true, count: episodes.length });
   } catch (error) {
     console.error('[Hongguo] 提交批量下载失败:', error.message);
-    return { success: false, error: error.message };
+    return res.json({ success: false, error: error.message });
   }
 });
 
-// ===== IPC：设置 =====
-ipcMain.handle('select-folder', async () => {
-  const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] });
-  if (result.canceled) return null;
-  return result.filePaths[0];
+// ---- API：设置 ----
+app.get('/api/settings', (req, res) => {
+  res.json(getCurrentSettings());
 });
 
-ipcMain.handle('get-settings', async () => getCurrentSettings());
-
-ipcMain.handle('save-settings', async (event, settings) => {
+app.post('/api/settings', (req, res) => {
   try {
-    const merged = { ...getDefaultSettings(), ...(settings || {}) };
+    const merged = { ...getDefaultSettings(), ...(req.body || {}) };
     store.saveSettings(merged);
     getCurrentSettings(); // 刷新并发数
-    return { success: true };
+    res.json({ success: true });
   } catch (error) {
-    return { success: false, error: error.message };
+    res.json({ success: false, error: error.message });
   }
 });
 
-// ===== IPC：下载管理 =====
-ipcMain.handle('get-download-tasks', () => {
-  const STATUS_ORDER = {
-    downloading: 0,
-    pending: 1,
-    failed: 2,
-    stopped: 3,
-    completed: 4,
-  };
-  const sorted = downloadTasks.slice().sort((a, b) => {
-    const wa = STATUS_ORDER[a.status] ?? 99;
-    const wb = STATUS_ORDER[b.status] ?? 99;
-    if (wa !== wb) return wa - wb;
-    if (wa <= 1) {
-      return (a.hongguoInfo?.vid_index || 0) - (b.hongguoInfo?.vid_index || 0) || (a.startTime || 0) - (b.startTime || 0);
+// ---- API：文件系统目录浏览 ----
+app.get('/api/fs/list', (req, res) => {
+  try {
+    const target = (req.query.path && String(req.query.path).trim()) || '/';
+    let resolved;
+    try {
+      resolved = path.resolve(target);
+    } catch (e) {
+      return res.json({ success: false, error: '路径无效' });
     }
-    return (b.endTime || b.startTime || 0) - (a.endTime || a.startTime || 0);
-  });
-  return sorted.map((task) => {
-    const { cancelSource, writer, ...serializableTask } = task;
-    return serializableTask;
-  });
+
+    let stat;
+    try {
+      stat = fs.statSync(resolved);
+    } catch (e) {
+      return res.json({ success: false, error: '路径不存在' });
+    }
+    if (!stat.isDirectory()) {
+      return res.json({ success: false, error: '不是目录' });
+    }
+
+    const raw = fs.readdirSync(resolved, { withFileTypes: true });
+    const dirs = [];
+    for (const d of raw) {
+      if (d.name.startsWith('.')) continue;
+      const full = path.join(resolved, d.name);
+      let isDir = d.isDirectory();
+      if (!isDir && d.isSymbolicLink()) {
+        try { isDir = fs.statSync(full).isDirectory(); } catch (_) { /* 忽略失效链接 */ }
+      }
+      if (isDir) dirs.push({ name: d.name, path: full });
+    }
+    dirs.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+
+    const parent = path.dirname(resolved);
+    res.json({
+      success: true,
+      path: resolved,
+      parent: parent === resolved ? null : parent,
+      dirs,
+    });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
 });
 
+// ---- API：下载管理 ----
+app.get('/api/tasks', (req, res) => {
+  res.json(getSortedTasks());
+});
 
-ipcMain.handle('delete-task', async (event, taskId) => {
-  const taskIndex = downloadTasks.findIndex((t) => t.id === taskId);
-  if (taskIndex === -1) return { success: false, error: '任务不存在' };
-
-  const task = downloadTasks[taskIndex];
-  if (task.status === 'downloading') {
-    task.cancelled = true;
-    if (task.cancelSource) {
-      try { task.cancelSource.cancel('用户删除任务'); } catch (_) {}
-    }
-    if (task.writer) {
-      try { task.writer.end(); } catch (_) {}
-    }
-  }
-
-  downloadTasks.splice(taskIndex, 1);
-  // 从队列移除
-  const qIndex = downloadQueue.findIndex((t) => t.id === taskId);
-  if (qIndex !== -1) downloadQueue.splice(qIndex, 1);
-
+app.delete('/api/tasks/:id', (req, res) => {
+  const taskIndex = downloadTasks.findIndex((t) => t.id === req.params.id);
+  if (taskIndex === -1) return res.json({ success: false, error: '任务不存在' });
+  deleteOneTask(req.params.id);
   saveDownloadTasks();
-  return { success: true };
+  res.json({ success: true });
 });
 
-ipcMain.handle('delete-tasks', async (event, taskIds) => {
-  if (!Array.isArray(taskIds) || taskIds.length === 0) return { success: false, error: '没有要删除的任务' };
-  for (const id of taskIds) {
-    deleteOneTask(id);
-  }
+app.delete('/api/tasks', (req, res) => {
+  const ids = req.body && req.body.ids;
+  if (!Array.isArray(ids) || ids.length === 0) return res.json({ success: false, error: '没有要删除的任务' });
+  for (const id of ids) deleteOneTask(id);
   saveDownloadTasks();
-  return { success: true, count: taskIds.length };
+  res.json({ success: true, count: ids.length });
 });
 
-async function deleteOneTask(taskId) {
-  const taskIndex = downloadTasks.findIndex((t) => t.id === taskId);
-  if (taskIndex === -1) return;
-  const task = downloadTasks[taskIndex];
-  if (task.status === 'downloading') {
-    task.cancelled = true;
-    if (task.cancelSource) { try { task.cancelSource.cancel('用户删除任务'); } catch (_) {} }
-    if (task.writer) { try { task.writer.end(); } catch (_) {} }
-  }
-  downloadTasks.splice(taskIndex, 1);
-  const qIndex = downloadQueue.findIndex((t) => t.id === taskId);
-  if (qIndex !== -1) downloadQueue.splice(qIndex, 1);
-}
-
-ipcMain.handle('stop-download', async (event, taskId) => {
-  const task = downloadTasks.find((t) => t.id === taskId);
-  if (!task) return { success: false, error: '任务不存在' };
+app.post('/api/tasks/:id/stop', (req, res) => {
+  const task = downloadTasks.find((t) => t.id === req.params.id);
+  if (!task) return res.json({ success: false, error: '任务不存在' });
 
   task.cancelled = true;
   if (task.cancelSource) { try { task.cancelSource.cancel('用户停止下载'); } catch (_) {} }
@@ -458,13 +517,13 @@ ipcMain.handle('stop-download', async (event, taskId) => {
   delete task.writer;
 
   saveDownloadTasks();
-  sendToRenderer('download-stopped', { id: taskId, path: task.savePath });
-  return { success: true };
+  broadcast('download-stopped', { id: req.params.id, path: task.savePath });
+  res.json({ success: true });
 });
 
-ipcMain.handle('retry-task', async (event, taskId) => {
-  const task = downloadTasks.find((t) => t.id === taskId);
-  if (!task) return { success: false, error: '任务不存在' };
+app.post('/api/tasks/:id/retry', (req, res) => {
+  const task = downloadTasks.find((t) => t.id === req.params.id);
+  if (!task) return res.json({ success: false, error: '任务不存在' });
 
   if (task.savePath && fs.existsSync(task.savePath)) {
     try { fs.unlinkSync(task.savePath); } catch (_) {}
@@ -479,16 +538,17 @@ ipcMain.handle('retry-task', async (event, taskId) => {
   delete task.cancelSource;
   delete task.writer;
 
-  if (!downloadQueue.some((t) => t.id === taskId)) downloadQueue.push(task);
+  if (!downloadQueue.some((t) => t.id === task.id)) downloadQueue.push(task);
   saveDownloadTasks();
   processDownloadQueue();
-  return { success: true };
+  res.json({ success: true });
 });
 
-ipcMain.handle('retry-tasks', async (event, taskIds) => {
-  if (!Array.isArray(taskIds) || taskIds.length === 0) return { success: false, error: '没有要重试的任务' };
+app.post('/api/tasks/retry', (req, res) => {
+  const ids = req.body && req.body.ids;
+  if (!Array.isArray(ids) || ids.length === 0) return res.json({ success: false, error: '没有要重试的任务' });
   let count = 0;
-  for (const taskId of taskIds) {
+  for (const taskId of ids) {
     const task = downloadTasks.find((t) => t.id === taskId);
     if (task && (task.status === 'failed' || task.status === 'stopped')) {
       if (task.savePath && fs.existsSync(task.savePath)) {
@@ -510,111 +570,44 @@ ipcMain.handle('retry-tasks', async (event, taskIds) => {
     saveDownloadTasks();
     processDownloadQueue();
   }
-  return { success: true, count };
+  res.json({ success: true, count });
 });
 
-ipcMain.handle('open-folder', async (event, taskId) => {
-  const task = downloadTasks.find((t) => t.id === taskId);
-  if (!task) return { success: false, error: '任务不存在' };
-
-  if (task.customDir && fs.existsSync(task.customDir)) {
-    await shell.openPath(task.customDir);
-    return { success: true };
-  }
-  if (task.savePath && fs.existsSync(task.savePath)) {
-    const isDir = fs.statSync(task.savePath).isDirectory();
-    if (isDir) {
-      await shell.openPath(task.savePath);
-    } else {
-      shell.showItemInFolder(task.savePath);
-    }
-    return { success: true };
-  }
-  if (task.savePath) {
-    const parentDir = path.dirname(task.savePath);
-    if (fs.existsSync(parentDir)) {
-      await shell.openPath(parentDir);
-      return { success: true };
-    }
-  }
-  return { success: false, error: '文件夹不存在' };
-});
-
-// ===== 官网外链与应用信息 =====
-// 获取应用信息（版本、品牌、官网链接）
-ipcMain.handle('get-app-info', async () => ({
-  version: APP_VERSION,
-  brand: APP_TITLE,
-  appName: '红果短剧下载器',
-  official_website: OFFICIAL_WEBSITE,
-}));
-
-// 打开外部链接
-ipcMain.handle('open-external-url', async (event, url) => {
-  const target = url || OFFICIAL_WEBSITE;
-  try {
-    await shell.openExternal(target);
-    return { success: true };
-  } catch (err) {
-    console.error('[Shell] 打开链接失败:', err.message);
-    return { success: false, error: err.message };
-  }
-});
-
-// ===== 窗口创建 =====
-function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1100,
-    height: 750,
-    minWidth: 900,
-    minHeight: 620,
-    title: APP_TITLE + ' - 红果短剧下载器',
-    autoHideMenuBar: true,
-    backgroundColor: '#f5f6fa',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-    },
+// ---- API：SSE 实时事件 ----
+app.get('/api/events', (req, res) => {
+  res.set({
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
   });
-
-  mainWindow.setMenuBarVisibility(false);
-
-  // 开发模式加载 vite dev server，生产模式加载打包产物
-  const devUrl = process.env.VITE_DEV_SERVER_URL;
-  if (devUrl) {
-    mainWindow.loadURL(devUrl);
-  } else {
-    mainWindow.loadFile(path.join(__dirname, 'dist-react', 'index.html'));
-  }
-
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
-}
-
-// ===== 应用生命周期 =====
-app.whenReady().then(() => {
-  const dataFile = path.join(app.getPath('userData'), 'data.json');
-  store.init(dataFile);
-  loadDownloadTasks();
-  getCurrentSettings();
-
-  createWindow();
-
-  // 启动时强制在默认浏览器中弹窗打开官网
-  setTimeout(() => {
-    shell.openExternal(OFFICIAL_WEBSITE).catch((e) => {
-      console.error('[Website] 自动打开官网失败:', e.message);
-    });
-  }, 1000);
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  res.flushHeaders();
+  res.write('retry: 3000\n\n');
+  sseClients.add(res);
+  req.on('close', () => {
+    sseClients.delete(res);
   });
 });
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+// ---- 静态资源与 SPA 回退 ----
+const DIST_DIR = path.join(__dirname, 'dist-react');
+app.use(express.static(DIST_DIR));
+app.get('*', (req, res) => {
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ success: false, error: '接口不存在' });
+  }
+  res.sendFile(path.join(DIST_DIR, 'index.html'));
+});
+
+// ===== 启动 =====
+fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
+fs.mkdirSync(DOWNLOAD_ROOT, { recursive: true });
+store.init(DATA_FILE);
+loadDownloadTasks();
+getCurrentSettings();
+
+app.listen(PORT, () => {
+  console.log(`[Server] ${APP_NAME} 已启动: http://localhost:${PORT}`);
+  console.log(`[Server] 下载目录: ${DOWNLOAD_ROOT}`);
+  console.log(`[Server] 数据文件: ${DATA_FILE}`);
 });

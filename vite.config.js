@@ -7,6 +7,13 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    proxy: {
+      // 开发模式下将 API 与 SSE 请求代理到后端服务
+      '/api': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
+    },
   },
   build: {
     outDir: 'dist-react',

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import './Settings.css';
-import { Settings, Folder, Check, ExternalLink } from './icons';
+import { Settings, Check, Folder, X, ChevronRight } from './icons';
+import { api } from '../api';
 
 
 const FORMAT_PRESETS = [
@@ -13,8 +14,16 @@ function SettingsPage() {
   const [settings, setSettings] = useState(null);
   const [saved, setSaved] = useState(false);
 
+  // 文件夹选择器状态
+  const [browserOpen, setBrowserOpen] = useState(false);
+  const [browserPath, setBrowserPath] = useState('');
+  const [browserParent, setBrowserParent] = useState(null);
+  const [browserDirs, setBrowserDirs] = useState([]);
+  const [browserLoading, setBrowserLoading] = useState(false);
+  const [browserError, setBrowserError] = useState('');
+
   useEffect(() => {
-    window.electronAPI.getSettings().then(setSettings);
+    api.getSettings().then(setSettings);
   }, []);
 
   const update = (key, value) => {
@@ -22,17 +31,52 @@ function SettingsPage() {
     setSaved(false);
   };
 
-  const selectFolder = async () => {
-    const dir = await window.electronAPI.selectFolder();
-    if (dir) update('root', dir);
-  };
-
   const save = async () => {
-    const res = await window.electronAPI.saveSettings(settings);
+    const res = await api.saveSettings(settings);
     if (res && res.success) {
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     }
+  };
+
+  // 加载某个目录的子目录列表，成功返回 true
+  const loadDir = async (p) => {
+    setBrowserLoading(true);
+    setBrowserError('');
+    try {
+      const res = await api.listDir(p);
+      if (res && res.success) {
+        setBrowserPath(res.path);
+        setBrowserParent(res.parent);
+        setBrowserDirs(res.dirs || []);
+        setBrowserLoading(false);
+        return true;
+      }
+      setBrowserError((res && res.error) || '无法读取该目录');
+      setBrowserLoading(false);
+      return false;
+    } catch (e) {
+      setBrowserError('读取目录出错: ' + e.message);
+      setBrowserLoading(false);
+      return false;
+    }
+  };
+
+  // 打开文件夹选择器
+  const openBrowser = async () => {
+    setBrowserOpen(true);
+    const start = (settings && settings.root && String(settings.root).trim()) || '/';
+    const ok = await loadDir(start);
+    if (!ok) await loadDir('/');
+  };
+
+  const goParent = () => {
+    if (browserParent) loadDir(browserParent);
+  };
+
+  const confirmSelect = () => {
+    if (browserPath) update('root', browserPath);
+    setBrowserOpen(false);
   };
 
   if (!settings) {
@@ -50,19 +94,24 @@ function SettingsPage() {
         <div className="settings-group">
           <label className="settings-label">下载目录</label>
           <div className="folder-row">
-            <input
-              type="text"
-              className="input-field"
-              value={settings.root || ''}
-              onChange={(e) => update('root', e.target.value)}
-              placeholder="选择下载保存目录"
-            />
-            <button className="btn btn-outline" onClick={selectFolder}>
+            <div className="folder-input-wrap">
               <Folder size={16} />
-              选择文件夹
+              <input
+                type="text"
+                className="input-field"
+                value={settings.root || ''}
+                onChange={(e) => update('root', e.target.value)}
+                placeholder="请输入服务器上的下载保存目录"
+              />
+            </div>
+            <button className="btn btn-outline" onClick={openBrowser}>
+              浏览…
             </button>
           </div>
-          <p className="settings-hint">文件将保存到 <code>下载目录/红果短剧/剧名/</code> 下</p>
+          <p className="settings-hint">
+            文件将保存到 <code>下载目录/红果短剧/剧名/</code> 下。
+            Docker 部署时请选择容器内挂载卷路径（例如 <code>/downloads</code>），并确保该目录已映射到宿主机。
+          </p>
         </div>
 
         <div className="settings-group">
@@ -110,28 +159,52 @@ function SettingsPage() {
         </div>
       </div>
 
-      <div className="settings-card mt16">
-        <div className="settings-group">
-          <label className="settings-label">版本更新与官方支持</label>
-          <p className="settings-hint" style={{ fontSize: '13px', lineHeight: '1.6' }}>
-            本客户端已完全脱机独立运行，无任何远程检测与后门。<br />
-            <strong>如需获取最新版本或技术支持，请访问唯一官方网站：</strong>
-            <span style={{ color: 'var(--accent)', fontWeight: 'bold', fontSize: '14px', marginLeft: '4px' }}>
-              111330.com
-            </span>
-          </p>
-          <div style={{ marginTop: '10px' }}>
-            <button
-              className="btn btn-outline"
-              style={{ borderColor: 'var(--accent)', color: 'var(--accent)', fontWeight: 600 }}
-              onClick={() => window.electronAPI.openExternalUrl('https://111330.com')}
-            >
-              <span>访问官网 (111330.com)</span>
-              <ExternalLink size={14} />
-            </button>
+      {/* 网页版文件夹选择器弹窗 */}
+      {browserOpen && (
+        <div className="dir-modal-backdrop" onClick={() => setBrowserOpen(false)}>
+          <div className="dir-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="dir-modal-header">
+              <span>选择下载目录</span>
+              <button className="icon-btn" title="关闭" onClick={() => setBrowserOpen(false)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="dir-modal-breadcrumb">
+              <button className="btn-chip" onClick={goParent} disabled={!browserParent}>返回上级</button>
+              <div className="dir-modal-path" title={browserPath}>{browserPath || '/'}</div>
+            </div>
+
+            <div className="dir-modal-list">
+              {browserLoading && <div className="dir-modal-empty">加载中...</div>}
+              {!browserLoading && browserError && (
+                <div className="dir-modal-empty">
+                  <span className="dir-modal-error">{browserError}</span>
+                  <button className="btn btn-outline" onClick={() => loadDir('/')}>转到根目录</button>
+                </div>
+              )}
+              {!browserLoading && !browserError && browserDirs.length === 0 && (
+                <div className="dir-modal-empty">此目录下没有子文件夹</div>
+              )}
+              {!browserLoading && !browserError && browserDirs.map((d) => (
+                <div key={d.path} className="dir-row" onClick={() => loadDir(d.path)}>
+                  <Folder size={16} />
+                  <span className="dir-row-name">{d.name}</span>
+                  <ChevronRight size={15} className="dir-row-arrow" />
+                </div>
+              ))}
+            </div>
+
+            <div className="dir-modal-footer">
+              <button className="btn btn-outline" onClick={() => setBrowserOpen(false)}>取消</button>
+              <button className="btn btn-primary" onClick={confirmSelect} disabled={!browserPath || browserLoading}>
+                <Check size={16} />
+                选择此文件夹
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

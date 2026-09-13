@@ -1,64 +1,25 @@
 {
   "name": "hongguo-downloader",
   "version": "1.0.0",
-  "description": "红果短剧全集批量下载器 - 官网与成品下载: 111330.com",
-  "homepage": "https://111330.com",
-  "main": "main.js",
+  "description": "红果短剧全集批量下载器（Web 版）",
+  "main": "server.js",
   "license": "GPL-3.0",
   "scripts": {
-    "start": "electron .",
-    "dev": "node scripts/dev.js",
-    "dev:react": "vite",
-    "build:react": "vite build",
-    "build": "npm run build:react && electron-builder --win",
-    "pack": "electron-builder --dir"
+    "start": "node server.js",
+    "dev": "concurrently -k -n web,server \"npm:dev:web\" \"npm:dev:server\"",
+    "dev:web": "vite",
+    "dev:server": "node server.js",
+    "build": "vite build"
   },
   "dependencies": {
-    "axios": "^1.13.2"
+    "axios": "^1.13.2",
+    "express": "^4.19.2"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^8.2.2",
-    "electron": "^28.3.3",
-    "electron-builder": "^24.13.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "vite": "^5.4.11",
-    "wait-on": "^7.2.0"
-  },
-  "build": {
-    "appId": "com.hongguo.downloader",
-    "productName": "红果短剧下载器",
-    "directories": {
-      "output": "dist"
-    },
-    "files": [
-      "main.js",
-      "preload.js",
-      "dist-react/**/*",
-      "src/native/**/*",
-      "src/store.js"
-    ],
-    "asar": true,
-    "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "icon": "build/icon.png",
-      "requestedExecutionLevel": "asInvoker"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "红果短剧下载器",
-      "artifactName": "红果短剧下载器-Setup-${version}.${ext}"
-    }
+    "vite": "^5.4.11"
   }
 }

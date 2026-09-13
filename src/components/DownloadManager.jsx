@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import './DownloadManager.css';
-import { Download, Trash2, RefreshCw, X, Film, Square, Folder } from './icons';
+import { Download, Trash2, RefreshCw, X, Film, Square } from './icons';
+import { api } from '../api';
 
 const STATUS_TEXT = {
   pending: '等待中',
@@ -46,34 +47,32 @@ function fmtBytes(bytes) {
 function DownloadManager({ onNavigate }) {
   const [tasks, setTasks] = useState([]);
   const [selected, setSelected] = useState(new Set());
-  const listenersRef = useRef([]);
 
   const refresh = useCallback(async () => {
-    const list = await window.electronAPI.getDownloadTasks();
+    const list = await api.getDownloadTasks();
     setTasks(list);
   }, []);
 
   useEffect(() => {
     refresh();
-    const cleanups = [
-      window.electronAPI.onDownloadProgress((data) => {
+    const unsubscribe = api.subscribe({
+      onDownloadProgress: (data) => {
         setTasks((prev) =>
           prev.map((t) => (t.id === data.id ? { ...t, progress: data.progress, receivedBytes: data.receivedBytes, totalBytes: data.totalBytes, status: 'downloading' } : t))
         );
-      }),
-      window.electronAPI.onDownloadTaskAdded(() => refresh()),
-      window.electronAPI.onDownloadCompleted((data) => {
+      },
+      onDownloadTaskAdded: () => refresh(),
+      onDownloadCompleted: (data) => {
         setTasks((prev) => prev.map((t) => (t.id === data.id ? { ...t, status: 'completed', progress: 100 } : t)));
-      }),
-      window.electronAPI.onDownloadFailed((data) => {
+      },
+      onDownloadFailed: (data) => {
         setTasks((prev) => prev.map((t) => (t.id === data.id ? { ...t, status: 'failed', error: data.error } : t)));
-      }),
-      window.electronAPI.onDownloadStopped((data) => {
+      },
+      onDownloadStopped: (data) => {
         setTasks((prev) => prev.map((t) => (t.id === data.id ? { ...t, status: 'stopped' } : t)));
-      }),
-    ];
-    listenersRef.current = cleanups;
-    return () => cleanups.forEach((c) => c());
+      },
+    });
+    return unsubscribe;
   }, [refresh]);
 
   const toggleSelect = (id) => {
@@ -86,20 +85,20 @@ function DownloadManager({ onNavigate }) {
   const clearSelection = () => setSelected(new Set());
 
   const deleteTask = async (id) => {
-    await window.electronAPI.deleteTask(id);
+    await api.deleteTask(id);
     refresh();
   };
 
   const deleteSelected = async () => {
     if (selected.size === 0) return;
-    await window.electronAPI.deleteTasks(Array.from(selected));
+    await api.deleteTasks(Array.from(selected));
     setSelected(new Set());
     refresh();
   };
 
   const retrySelected = async () => {
     if (selected.size === 0) return;
-    await window.electronAPI.retryTasks(Array.from(selected));
+    await api.retryTasks(Array.from(selected));
     setSelected(new Set());
     refresh();
   };
@@ -107,7 +106,7 @@ function DownloadManager({ onNavigate }) {
   const clearCompleted = async () => {
     const ids = tasks.filter((t) => t.status === 'completed').map((t) => t.id);
     if (ids.length === 0) return;
-    await window.electronAPI.deleteTasks(ids);
+    await api.deleteTasks(ids);
     refresh();
   };
 
@@ -199,18 +198,15 @@ function DownloadManager({ onNavigate }) {
                 </div>
                 <div className="dm-task-actions" onClick={(e) => e.stopPropagation()}>
                   {canStop && (
-                    <button className="icon-btn" title="停止" onClick={() => { window.electronAPI.stopDownload(task.id); refresh(); }}>
+                    <button className="icon-btn" title="停止" onClick={() => { api.stopDownload(task.id); refresh(); }}>
                       <Square size={16} />
                     </button>
                   )}
                   {canRetry && (
-                    <button className="icon-btn" title="重试" onClick={() => { window.electronAPI.retryTask(task.id); }}>
+                    <button className="icon-btn" title="重试" onClick={() => { api.retryTask(task.id); }}>
                       <RefreshCw size={16} />
                     </button>
                   )}
-                  <button className="icon-btn" title="打开文件夹" onClick={() => window.electronAPI.openFolder(task.id)}>
-                    <Folder size={16} />
-                  </button>
                   <button className="icon-btn icon-btn-danger" title="删除" onClick={() => deleteTask(task.id)}>
                     <Trash2 size={16} />
                   </button>

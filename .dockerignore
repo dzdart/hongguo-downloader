@@ -1,0 +1,12 @@
+node_modules
+dist
+dist-react
+data
+downloads
+.git
+.vscode
+.idea
+*.log
+*.md
+红果视频刷访问量
+build

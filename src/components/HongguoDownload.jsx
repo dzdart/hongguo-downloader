@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import './HongguoDownload.css';
-import { Film, Download, CheckSquare, Square, RefreshCw, Folder, Sparkles, ExternalLink } from './icons';
+import { Film, Download, CheckSquare, Square, RefreshCw, Folder, Sparkles } from './icons';
+import { api } from '../api';
 
 
 function HongguoDownload({ onNavigate }) {
@@ -28,7 +29,7 @@ function HongguoDownload({ onNavigate }) {
     setSelectedVids(new Set());
 
     try {
-      const res = await window.electronAPI.hongguoResolve(inputUrl.trim());
+      const res = await api.hongguoResolve(inputUrl.trim());
       if (res.success && res.data) {
         setSeriesData(res.data);
         // 默认全选
@@ -130,7 +131,7 @@ function HongguoDownload({ onNavigate }) {
     setSuccessMsg('');
     try {
       const selectedEps = seriesData.episodes.filter((ep) => selectedVids.has(ep.vid));
-      const res = await window.electronAPI.hongguoDownloadBatch({
+      const res = await api.hongguoDownloadBatch({
         seriesId: seriesData.series_id,
         seriesTitle: seriesData.series_title,
         episodes: selectedEps,
@@ -159,24 +160,6 @@ function HongguoDownload({ onNavigate }) {
           <p>支持粘贴红果短剧 App 分享链接或剧集 ID，突破 AES-128 CENC 原生加密，无水印全集高清下载。</p>
         </div>
       </div>
-
-      {/* 醒目官网更新指引条 */}
-      <div
-        className="hongguo-site-notice"
-        onClick={() => window.electronAPI.openExternalUrl && window.electronAPI.openExternalUrl('https://111330.com')}
-        title="点击访问官网 111330.com"
-      >
-        <span className="notice-icon">📢</span>
-        <span className="notice-msg">
-          <strong>【防迷路官方更新】</strong>本软件已关闭远程更新接口，如需获取最新版本请进入官网：
-          <span className="notice-domain">111330.com</span>
-        </span>
-        <span className="notice-btn">
-          <span>进入官网</span>
-          <ExternalLink size={13} />
-        </span>
-      </div>
-
 
       {/* 解析输入卡片 */}
       <div className="hongguo-card">

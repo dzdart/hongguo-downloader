@@ -1,7 +1,6 @@
 /**
  * store.js - 精简持久化模块
- * 用单个 JSON 文件保存「设置」与「下载任务」，替代原项目里的 sql.js 数据库 + electron-store，
- * 减少依赖，方便独立打包。
+ * 用单个 JSON 文件保存「设置」与「下载任务」，减少依赖，方便 Web/Docker 部署。
  */
 const fs = require('fs');
 const path = require('path');
