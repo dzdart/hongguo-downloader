@@ -3,6 +3,12 @@ node_modules/
 dist/
 dist-react/
 
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
 # 构建与打包输出
 release/
 out/

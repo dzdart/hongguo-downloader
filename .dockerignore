@@ -10,3 +10,7 @@ downloads
 *.md
 红果视频刷访问量
 build
+__pycache__
+*.pyc
+.venv
+venv

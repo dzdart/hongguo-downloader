@@ -12,7 +12,7 @@
 
 本工具是一款专为**红果短剧（番茄小说短剧频道 / novelread 系）**打造的全集批量解析与下载工具。
 
-传统抓取方式只能录屏或抓取到分片加密文件，本工具采用 **Node.js + React** 架构，内置字节系短剧 API 逆向协议与 **CENC-AES-CTR 原生流式解密引擎**，可一键批量解析整部短剧的所有集数，并在下载过程中自动解密生成无水印、高码率的标准 MP4 原画视频。
+传统抓取方式只能录屏或抓取到分片加密文件，本工具采用 **Python + Flask 后端 + React 前端**架构，内置字节系短剧 API 逆向协议与 **CENC-AES-CTR 原生流式解密引擎**，可一键批量解析整部短剧的所有集数，并在下载过程中自动解密生成无水印、高码率的标准 MP4 原画视频。
 
 本版本为 **Web 网页版**：服务端提供网页界面与下载引擎，浏览器访问即可使用，支持 Docker 一键部署。
 
@@ -35,7 +35,7 @@
 ### 三、🔐 原生底层解密与高速下载引擎
 
 1. **spade_a 密钥派生与 CENC-AES-CTR 实时解密**：输出标准非加密 MP4，画质与官方客户端原画一致，无需二次转码。
-2. **可靠的分片防损机制**：`.part` 临时文件机制，完整解密成功后才生成最终 `.mp4`。
+2. **可靠的分片防损机制**：`.enc.tmp` 临时文件机制，完整解密成功后才生成最终 `.mp4`。
 3. **多并发线程池调节**：支持 1 ~ 10 线程并行下载，智能队列调度。
 
 ### 四、📋 全功能任务管理中心
@@ -82,28 +82,40 @@ docker compose up -d --build
 ## 🛠️ 本地开发运行
 
 ### 环境要求
-- Node.js >= 18.0.0（推荐 20.x 或 22.x）
-- npm >= 9.0.0
+- Python >= 3.9（推荐 3.11 / 3.12）
+- Node.js >= 18.0.0（仅用于编译前端）
 
-### 安装与开发
+### 安装依赖
 
 ```bash
-npm install
+# 安装 Python 依赖
+pip install -r requirements.txt
 
-# 开发模式（同时启动 Vite 前端与后端服务，前端自动代理 /api）
-npm run dev
-# 前端：http://localhost:5173
-# 后端：http://localhost:8080
+# 编译 React 前端到 dist-react/
+npm install
+npm run build
 ```
 
-### 生产构建与运行
+### 启动服务
 
 ```bash
-# 1. 编译 React 前端到 dist-react/
-npm run build
+# 启动 Flask 服务（默认端口 8080，同时托管前端页面）
+python app.py
+```
 
-# 2. 启动服务端（默认端口 8080，同时托管前端页面）
-npm start
+浏览器访问 **http://localhost:8080** 即可使用。
+
+### 前端开发模式（可选）
+
+需要同时修改前端界面时，可启动 Vite 开发服务器（自动代理 `/api` 到后端）：
+
+```bash
+# 终端 1：启动后端
+python app.py
+
+# 终端 2：启动前端热更新
+npm run dev
+# 前端：http://localhost:5173
 ```
 
 ---
@@ -111,17 +123,17 @@ npm start
 ## 📂 项目代码结构说明
 
 ```text
-├── server.js                # Web 服务端：短剧解析、下载编排、流式解密、REST API 与 SSE 推送
-├── src/
+├── app.py                   # Flask 服务端：短剧解析、下载编排、流式解密、REST API 与 SSE 推送
+├── hongguo.py               # 核心逆向协议：短剧 API 解析与 spade_a AES 解密模块
+├── store.py                 # 本地配置与任务历史持久化存储（JSON）
+├── requirements.txt         # Python 依赖清单
+├── src/                     # React 前端源码
 │   ├── api.js               # 前端 fetch + SSE 通信层
 │   ├── App.jsx              # 主界面与侧边栏导航框架
-│   ├── components/          # React 核心功能组件
-│   │   ├── HongguoDownload  # 短剧解析、选集面板与批量提交页面
-│   │   ├── DownloadManager  # 下载进度看板与多任务管控中心
-│   │   └── Settings.jsx     # 下载目录、命名规则与并发设置
-│   ├── native/
-│   │   └── hongguo.js       # 核心逆向协议：短剧 API 解析与 spade_a AES 解密模块
-│   └── store.js             # 本地配置与任务历史持久化存储
+│   └── components/          # React 核心功能组件
+│       ├── HongguoDownload  # 短剧解析、选集面板与批量提交页面
+│       ├── DownloadManager  # 下载进度看板与多任务管控中心
+│       └── Settings.jsx     # 下载目录、命名规则与并发设置
 ├── vite.config.js           # Vite 构建与开发代理配置
 ├── Dockerfile               # 多阶段 Docker 镜像构建
 ├── docker-compose.yml       # Docker Compose 编排（含下载目录卷挂载）

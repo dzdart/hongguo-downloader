@@ -6,19 +6,21 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-# ===== 运行阶段：仅保留运行所需文件 =====
-FROM node:20-alpine
+# ===== 运行阶段：Python + Flask =====
+FROM python:3.12-slim
 WORKDIR /app
-ENV NODE_ENV=production
 
-# 安装运行依赖（express、axios）
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+# 安装运行依赖（flask、requests、pycryptodome、waitress）
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
 # 拷贝后端源码与前端构建产物
-COPY server.js ./
-COPY src/native ./src/native
-COPY src/store.js ./src/store.js
+COPY app.py ./
+COPY hongguo.py ./
+COPY store.py ./
 COPY --from=build /app/dist-react ./dist-react
 
 # 下载目录与数据目录（通过卷挂载持久化）
@@ -27,4 +29,4 @@ ENV DATA_FILE=/app/data/data.json
 VOLUME ["/downloads", "/app/data"]
 
 EXPOSE 8080
-CMD ["node", "server.js"]
+CMD ["python", "app.py"]
