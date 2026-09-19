@@ -1,10 +1,13 @@
-name: Build Deploy Package
+name: Build Release Package
 
 on:
   push:
     tags:
       - 'v*'          # 打 tag 时自动构建并发布 Release
   workflow_dispatch:  # 也可以在 Actions 页面手动触发
+
+permissions:
+  contents: write      # 创建 Release 需要写权限
 
 jobs:
   build:
@@ -20,50 +23,39 @@ jobs:
           node-version: 20
           cache: 'npm'
 
-      - name: Install dependencies
+      - name: Install frontend dependencies
         run: npm ci
 
       - name: Build React app
-        run: npm run build
-        # 假设输出目录是 build，如果是 dist 请自行修改后面复制步骤
+        run: npm run build        # 输出到 dist-react/
 
-      - name: Bundle server.js with esbuild
-        run: |
-          npx esbuild server.js \
-            --bundle \
-            --platform=node \
-            --target=node20 \
-            --outfile=server.bundle.js \
-            --external:pg-native \
-            --external:sqlite3 \
-            --external:bcrypt \
-            --external:sharp
-          # 上面 external 的 native 模块根据你实际依赖删减。
-          # 纯 JS 依赖会被直接打包进单文件，不需要 external。
+      - name: Verify Python syntax
+        run: python3 -m py_compile app.py hongguo.py store.py
 
-      - name: Prepare deploy directory
+      - name: Prepare build directory
         run: |
-          mkdir -p deploy
-          cp server.bundle.js deploy/
-          cp -r build deploy/build
-          # 如果有 .env、public 等其他文件，继续 cp
-          # cp .env.example deploy/.env
+          rm -rf build
+          mkdir -p build
+          # Python 后端源码
+          cp app.py hongguo.py store.py requirements.txt build/
+          # 前端构建产物（app.py 在同级目录查找 dist-react）
+          cp -r dist-react build/dist-react
+          # 附上说明与许可证
+          cp README.md LICENSE build/
 
-      - name: Create zip
-        run: |
-          cd deploy
-          zip -r ../deploy-package.zip .
-          cd ..
+      - name: Create zip package
+        run: zip -r "hongguo-downloader-${{ github.ref_name }}.zip" build
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: deploy-package
-          path: deploy-package.zip
+          name: hongguo-downloader-${{ github.ref_name }}
+          path: hongguo-downloader-${{ github.ref_name }}.zip
           retention-days: 7
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: deploy-package.zip
+          files: hongguo-downloader-${{ github.ref_name }}.zip
+          generate_release_notes: true
