@@ -1,0 +1,69 @@
+name: Build Deploy Package
+
+on:
+  push:
+    tags:
+      - 'v*'          # 打 tag 时自动构建并发布 Release
+  workflow_dispatch:  # 也可以在 Actions 页面手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build React app
+        run: npm run build
+        # 假设输出目录是 build，如果是 dist 请自行修改后面复制步骤
+
+      - name: Bundle server.js with esbuild
+        run: |
+          npx esbuild server.js \
+            --bundle \
+            --platform=node \
+            --target=node20 \
+            --outfile=server.bundle.js \
+            --external:pg-native \
+            --external:sqlite3 \
+            --external:bcrypt \
+            --external:sharp
+          # 上面 external 的 native 模块根据你实际依赖删减。
+          # 纯 JS 依赖会被直接打包进单文件，不需要 external。
+
+      - name: Prepare deploy directory
+        run: |
+          mkdir -p deploy
+          cp server.bundle.js deploy/
+          cp -r build deploy/build
+          # 如果有 .env、public 等其他文件，继续 cp
+          # cp .env.example deploy/.env
+
+      - name: Create zip
+        run: |
+          cd deploy
+          zip -r ../deploy-package.zip .
+          cd ..
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-package
+          path: deploy-package.zip
+          retention-days: 7
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: deploy-package.zip
